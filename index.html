@@ -223,6 +223,18 @@ function sRow(sk,r){const cfg=CFG[sk],o={};cfg.head.concat(cfg.cols).forEach(c=>
 function sEmpty(sk,o){const cfg=CFG[sk];return cfg.head.concat(cfg.cols).every(c=>!nrm(c,o[c]))}
 function sBlock(sk,D){const cfg=CFG[sk];let rows=[],head=null,cur=false;for(let r=0;r<cfg.rows;r++){const o=sRow(sk,r),t=(o.tanggal||"").trim();if(t){cur=(t===D);if(cur){if(!head)head=o;rows.push(o)}}else if(cur&&!sEmpty(sk,o))rows.push(o)}return head?{head:head,rows:rows}:null}
 function cmpBlock(sk,e,got){const cfg=CFG[sk],g=cfg.g,bad=new Set();cfg.head.forEach(c=>{if(H(g,c,got.head[c])!==e.h[c])bad.add(c)});if(e.r.length!==got.rows.length)return{rows:true,bad:[...bad]};let best=null;perms(got.rows).forEach(p=>{const m=new Set();p.forEach((row,i)=>cfg.cols.forEach(c=>{if(H(g,c,row[c])!==e.r[i][c])m.add(c)}));if(!best||m.size<best.size)best=m});best.forEach(c=>bad.add(c));return{rows:false,bad:[...bad]}}
+// Menentukan sel yang salah untuk pewarnaan PDF, tetap memakai kunci penilaian yang sama.
+function pdfStepBad(sk,i,rows){const e=(CHK.steps[i]||{})[sk],cfg=CFG[sk],out=new Map();if(!rows||!rows.length)return out;
+  if(!e){rows.forEach(r=>out.set(r,new Set(cfg.head.concat(cfg.cols).filter(c=>aval(sk,r,c).trim()))));return out}
+  const got=sBlock(sk,STEPD[i]);if(!got)return out;
+  if(e.r.length!==got.rows.length){got.rows.forEach(o=>{const r=rows.find(x=>sRow(sk,x)===o);});rows.forEach(r=>out.set(r,new Set(cfg.head.concat(cfg.cols).filter(c=>aval(sk,r,c).trim()))));return out}
+  let best=null,bestCost=Infinity;perms(got.rows).forEach(p=>{let cost=0;p.forEach((row,j)=>cfg.cols.forEach(c=>{if(H(cfg.g,c,row[c])!==e.r[j][c])cost++}));if(cost<bestCost){bestCost=cost;best=p}});
+  const sourceRows=[];let cur=null;for(let r=0;r<cfg.rows;r++){const t=(aval(sk,r,'tanggal')||'').trim();if(t)cur=(t===STEPD[i]);if(cur&&!t&&!sEmpty(sk,sRow(sk,r)))sourceRows.push(r);else if(t===STEPD[i])sourceRows.push(r)}
+  if(sourceRows.length!==got.rows.length)return out;
+  const headBad=new Set(cfg.head.filter(c=>H(cfg.g,c,got.head[c])!==e.h[c]));
+  best.forEach((row,j)=>{const original=got.rows.indexOf(row);const r=sourceRows[original];const bad=new Set(cfg.cols.filter(c=>H(cfg.g,c,row[c])!==e.r[j][c]));if(j===0)headBad.forEach(c=>bad.add(c));if(bad.size)out.set(r,bad)});
+  return out;
+}
 function checkStep(i){const D=STEPD[i],exp=CHK.steps[i],P=[];let miss=0,missN=[];Object.keys(CFG).forEach(sk=>{const e=exp[sk],got=sBlock(sk,D),n=CFG[sk].n;if(e&&!got){miss++;missN.push(n)}else if(!e&&got)P.push("🚫 <b>"+n+"</b>: transaksi tanggal ini tidak perlu dicatat di sini. Kosongkan baris tanggal ini.");else if(e&&got){const r=cmpBlock(sk,e,got);if(r.rows)P.push("❌ <b>"+n+"</b>: jumlah baris untuk tanggal ini belum sesuai."+(r.bad.length?" Kolom "+r.bad.map(c=>lab(sk,c)).join(", ")+" juga perlu dicek.":""));else if(r.bad.length)P.push("❌ <b>"+n+"</b>: kolom "+r.bad.map(c=>lab(sk,c)).join(", ")+" belum tepat.")}});if(miss){const t=(+answers["__t"+i]||0);P.push("⚠️ Masih ada <b>"+miss+" lembar kerja</b> yang belum dicatat untuk tanggal ini."+(t>=3?" Petunjuk: "+missN.join(", ")+".":" Pikirkan kembali akun apa saja yang terpengaruh."))}return P}
 function checkFinal(){const P=[];Object.keys(CHK.fin).forEach(sk=>{const f=CHK.fin[sk],bad=[];["tot","acc"].forEach(k=>Object.keys(f[k]).forEach(c=>{if(H(sk,c,aval(sk,k,c))!==f[k][c])bad.push((k==="tot"?"Total ":"Account Number ")+lab(sk,c))}));const pr=(a,t,dk,tk)=>{const x=[];for(let i=0;i<f.n;i++){const A=aval(sk,"rc"+i,a),T=aval(sk,"rc"+i,t);if(A.trim()||T.trim())x.push(cyrb(sk+".pair|"+nrm(dk,A)+"|"+nrm(tk,T),7))}return x.sort().join(",")};if(pr("dacc","dtot","dacc","dtot")!==f.rd.join(","))bad.push("Rekapitulasi sisi Debit");if(pr("kacc","ktot","kacc","ktot")!==f.rk.join(","))bad.push("Rekapitulasi sisi Credit");if(H(sk,"dtot",aval(sk,"rcT","dtot"))!==f.rT.dtot||H(sk,"ktot",aval(sk,"rcT","ktot"))!==f.rT.ktot)bad.push("TOTAL Rekapitulasi");if(bad.length)P.push("❌ <b>"+FINN[sk]+"</b>: "+bad.join("; ")+" belum tepat.")});return P}
 let stepMsg="";
@@ -285,19 +297,19 @@ function pdfLembarJawaban(doc,y,R){
       const h=Math.max(5.4,Math.max(...cl.map(c=>c.lines.length))*lh+1.8);
       if(y+h>LIM){newPage();head()}
       let x=M;doc.setDrawColor(205,218,211);doc.setLineWidth(0.15);
-      cl.forEach((c,i)=>{doc.setFillColor(255,255,255);doc.rect(x,y,ws[i],h);doc.setFont("helvetica",spec[i][0]==="lbl"?"bold":"normal");doc.setFontSize(c.fs);doc.setTextColor(23,37,34);c.lines.forEach((ln,j)=>{const ty=y+3.5+j*lh;if(spec[i][3]==="n")doc.text(ln,x+ws[i]-pad,ty,{align:"right"});else doc.text(ln,x+pad,ty)});x+=ws[i]});
+      cl.forEach((c,i)=>{const bad=row.__bad&&row.__bad.includes(spec[i][0]);if(bad)doc.setFillColor(255,210,210);else doc.setFillColor(255,255,255);doc.rect(x,y,ws[i],h);doc.setFont("helvetica",spec[i][0]==="lbl"?"bold":"normal");doc.setFontSize(c.fs);if(bad)doc.setTextColor(160,25,25);else doc.setTextColor(23,37,34);c.lines.forEach((ln,j)=>{const ty=y+3.5+j*lh;if(spec[i][3]==="n")doc.text(ln,x+ws[i]-pad,ty,{align:"right"});else doc.text(ln,x+pad,ty)});x+=ws[i]});
       y+=h});
     y+=3.5};
   // kelompokkan baris tiap lembar menurut tanggal yang diketik siswa (aturan sama dengan penilai)
   const groups={};
   Object.keys(CFG).forEach(sk=>{const cfg=CFG[sk],map=new Map();let cur=null;for(let r=0;r<cfg.rows;r++){const t=(aval(sk,r,"tanggal")||"").trim();if(t){cur=t;if(!map.has(t))map.set(t,[]);map.get(t).push(r)}else{const empty=cfg.head.concat(cfg.cols).every(c=>!nrm(c,aval(sk,r,c)));if(!empty){const key=cur||"";if(!map.has(key))map.set(key,[]);map.get(key).push(r)}}}groups[sk]=map});
-  const tablesFor=key=>{let n=0;Object.keys(CFG).forEach(sk=>{const rows=groups[sk].get(key);if(!rows||!rows.length)return;n++;const spec=PDF_COLS[sk];need(36);doc.setFont("helvetica","bold");doc.setFontSize(8);doc.setTextColor(23,37,34);doc.text(safe(CFG[sk].n)+"  ("+rows.length+" baris)",M,y+2.5);y+=4.5;grid(spec,rows.map(r=>{const o={};spec.forEach(c=>o[c[0]]=aval(sk,r,c[0]));return o}))});return n};
+  const tablesFor=(key,stepIndex=-1)=>{let n=0;Object.keys(CFG).forEach(sk=>{const rows=groups[sk].get(key);if(!rows||!rows.length)return;n++;const spec=PDF_COLS[sk];need(36);doc.setFont("helvetica","bold");doc.setFontSize(8);doc.setTextColor(23,37,34);doc.text(safe(CFG[sk].n)+"  ("+rows.length+" baris)",M,y+2.5);y+=4.5;const badMap=stepIndex>=0?pdfStepBad(sk,stepIndex,rows):new Map();if(stepIndex===-2)rows.forEach(r=>badMap.set(r,new Set(spec.map(c=>c[0]).filter(c=>aval(sk,r,c).trim()))));grid(spec,rows.map(r=>{const o={};spec.forEach(c=>o[c[0]]=aval(sk,r,c[0]));o.__bad=[...(badMap.get(r)||[])];return o}))});return n};
 
   bar("E. LEMBAR JAWABAN SISWA PER TANGGAL",false,false);
   note("Bagian ini menampilkan isian siswa pada tiap lembar kerja, dikelompokkan per tanggal soal. Jumlah tabel mengikuti lembar yang diisi siswa pada tanggal tersebut. Isian dibaca berdasarkan tanggal yang diketik siswa; baris tanpa tanggal dianggap lanjutan baris bertanggal di atasnya.",true);
   for(let i=0;i<STEPD.length;i++){
     bar("Soal "+(i+1)+"  |  "+STEPD[i]+"  |  "+transactions[i][1],R&&R.r[i],true,62);
-    if(!tablesFor(STEPD[i])){note("Tidak ada isian pada lembar mana pun untuk tanggal ini.",true)}
+    if(!tablesFor(STEPD[i],i)){note("Tidak ada isian pada lembar mana pun untuk tanggal ini.",true)}
   }
   // soal 16
   bar("Soal 16  |  Total, nomor akun, dan rekapitulasi",R&&R.r[15],true,62);
@@ -308,14 +320,14 @@ function pdfLembarJawaban(doc,y,R){
     const tD=aval(sk,"rcT","dtot"),tK=aval(sk,"rcT","ktot");if(tD||tK)rcRows.push({lbl:"TOTAL",dacc:"",dtot:tD,kacc:"",ktot:tK});
     if(!cols.length&&!rcRows.length)return;any16=true;
     need(40);doc.setFont("helvetica","bold");doc.setFontSize(8);doc.setTextColor(23,37,34);doc.text(safe(FINN[sk]),M,y+2.5);y+=4.5;
-    if(cols.length){const spec=[["lbl","Baris",24]].concat(cols.map(c=>[c,lab(sk,c),18,"n"])),tot={lbl:"TOTAL"},acc={lbl:"ACCOUNT NUMBER"};cols.forEach(c=>{tot[c]=aval(sk,"tot",c);acc[c]=aval(sk,"acc",c)});grid(spec,[tot,acc])}
-    if(rcRows.length)grid([["lbl","Rekapitulasi",16],["dacc","Debit - Acc. No",24],["dtot","Debit - Total",26,"n"],["kacc","Credit - Acc. No",24],["ktot","Credit - Total",26,"n"]],rcRows,120)});
+    if(cols.length){const spec=[["lbl","Baris",24]].concat(cols.map(c=>[c,lab(sk,c),18,"n"])),tot={lbl:"TOTAL",__bad:[]},acc={lbl:"ACCOUNT NUMBER",__bad:[]};cols.forEach(c=>{tot[c]=aval(sk,"tot",c);acc[c]=aval(sk,"acc",c);if(H(sk,c,tot[c])!==f.tot[c])tot.__bad.push(c);if(f.acc[c]&&H(sk,c,acc[c])!==f.acc[c])acc.__bad.push(c)});grid(spec,[tot,acc])}
+    if(rcRows.length){rcRows.forEach((o,ri)=>{o.__bad=[];if(o.lbl==="TOTAL"){if(H(sk,"dtot",o.dtot)!==f.rT.dtot)o.__bad.push("dtot");if(H(sk,"ktot",o.ktot)!==f.rT.ktot)o.__bad.push("ktot")}else{const d=cyrb(sk+".pair|"+nrm("dacc",o.dacc)+"|"+nrm("dtot",o.dtot),7),k=cyrb(sk+".pair|"+nrm("kacc",o.kacc)+"|"+nrm("ktot",o.ktot),7);if(!f.rd.includes(d)){o.__bad.push("dacc");o.__bad.push("dtot")}if(!f.rk.includes(k)){o.__bad.push("kacc");o.__bad.push("ktot")}}});grid([["lbl","Rekapitulasi",16],["dacc","Debit - Acc. No",24],["dtot","Debit - Total",26,"n"],["kacc","Credit - Acc. No",24],["ktot","Credit - Total",26,"n"]],rcRows,120)}});
   if(!any16)note("Tidak ada isian total, nomor akun, atau rekapitulasi.",true);
   // isian di luar tanggal soal
   const known=new Set(STEPD),extra=new Map();
   Object.keys(CFG).forEach(sk=>groups[sk].forEach((rows,key)=>{if(!known.has(key)&&rows.length){if(!extra.has(key))extra.set(key,1)}}));
   if(extra.size){bar("Isian di luar tanggal soal",false,false);note("Baris di bawah ini tidak ikut dinilai pada soal mana pun karena tanggalnya tidak sama persis dengan tanggal soal, atau tidak bertanggal. Periksa penulisan tanggalnya.",true);
-    extra.forEach((_,key)=>{need(34);doc.setFont("helvetica","bold");doc.setFontSize(8.5);doc.setTextColor(150,60,20);doc.text(key?("Tanggal tertulis: "+safe(key)):"Baris tanpa tanggal",M,y+3);y+=6;tablesFor(key)})}
+    extra.forEach((_,key)=>{need(34);doc.setFont("helvetica","bold");doc.setFontSize(8.5);doc.setTextColor(150,60,20);doc.text(key?("Tanggal tertulis: "+safe(key)):"Baris tanpa tanggal",M,y+3);y+=6;tablesFor(key,-2)})}
   return y;
 }
 
